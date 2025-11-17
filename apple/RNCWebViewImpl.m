@@ -17,6 +17,9 @@
 
 #import "objc/runtime.h"
 
+// Forward declaration of AYWKWebView (implemented at end of file)
+@class AYWKWebView;
+
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
@@ -48,7 +51,7 @@ NSString *const CUSTOM_SELECTOR = @"_CUSTOM_SELECTOR_";
 @end
 #endif // TARGET_OS_IOS
 
-@interface RNCWKWebView : WKWebView
+@interface RNCWKWebView : AYWKWebView
 #if !TARGET_OS_OSX
 @property (nonatomic, copy) NSArray<NSDictionary *> * _Nullable menuItems;
 @property (nonatomic, copy) NSArray<NSString *> * _Nullable suppressMenuItems;
@@ -517,6 +520,11 @@ RCTAutoInsetsProtocol>
   if (self.window != nil && _webView == nil) {
     WKWebViewConfiguration *wkWebViewConfig = [self setUpWkWebViewConfig];
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
+
+    // Configure independent gesture control (back: enabled, forward: disabled)
+    _webView.allowsBackNavigationGestures = YES;
+    _webView.allowsForwardNavigationGestures = NO;
+
     [self setBackgroundColor: _savedBackgroundColor];
 #if !TARGET_OS_OSX
     _webView.menuItems = _menuItems;
@@ -539,7 +547,9 @@ RCTAutoInsetsProtocol>
 #endif // !TARGET_OS_OSX
     _webView.allowsLinkPreview = _allowsLinkPreview;
     [_webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionOld | NSKeyValueObservingOptionNew context:nil];
-    _webView.allowsBackForwardNavigationGestures = _allowsBackForwardNavigationGestures;
+    // Use independent gesture control instead of deprecated combined property
+    _webView.allowsBackNavigationGestures = _allowsBackForwardNavigationGestures;
+    _webView.allowsForwardNavigationGestures = NO;
 
     _webView.customUserAgent = _userAgent;
 
@@ -585,7 +595,9 @@ RCTAutoInsetsProtocol>
 // Update webview property when the component prop changes.
 - (void)setAllowsBackForwardNavigationGestures:(BOOL)allowsBackForwardNavigationGestures {
   _allowsBackForwardNavigationGestures = allowsBackForwardNavigationGestures;
-  _webView.allowsBackForwardNavigationGestures = _allowsBackForwardNavigationGestures;
+  // Use independent gesture control: only back gesture follows the prop, forward is always disabled
+  _webView.allowsBackNavigationGestures = _allowsBackForwardNavigationGestures;
+  _webView.allowsForwardNavigationGestures = NO;
 }
 
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130300 || \
@@ -1953,6 +1965,129 @@ didFinishNavigation:(WKNavigation *)navigation
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
   [self.scriptDelegate userContentController:userContentController didReceiveScriptMessage:message];
+}
+
+@end
+
+#pragma mark - AYWKWebView Implementation
+
+/**
+ * AYWKWebView - Custom WKWebView for independent back/forward gesture control
+ *
+ * Intercepts WKWebView's gesture recognizer registration to separately control
+ * left-edge (back) and right-edge (forward) swipe gestures.
+ */
+
+@interface AYWKWebView ()
+
+@property (nonatomic, assign) BOOL didInit;
+@property (nonatomic, strong) UIScreenEdgePanGestureRecognizer *backNavigationGestures;
+@property (nonatomic, strong) UIScreenEdgePanGestureRecognizer *forwardNavigationGestures;
+@property (nonatomic, assign) BOOL allowsBackNavigationGesturesSet;
+
+@end
+
+@implementation AYWKWebView
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    self = [super initWithCoder:coder];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
+    self = [super initWithFrame:frame configuration:configuration];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (void)customIntitialization {
+    if (!self.didInit) {
+        self.didInit = YES;
+        [self _allowsBackForwardNavigationGestures];
+    }
+}
+
+- (void)dealloc {
+    self.backNavigationGestures = nil;
+    self.forwardNavigationGestures = nil;
+}
+
+/**
+ * Triggers parent WKWebView to register its gesture recognizers
+ * Sets flag to intercept gesture registration in addGestureRecognizer
+ */
+- (void)_allowsBackForwardNavigationGestures {
+    self.allowsBackNavigationGesturesSet = YES;
+    [super setAllowsBackForwardNavigationGestures:YES];
+    self.allowsBackNavigationGesturesSet = NO;
+}
+
+/**
+ * Intercepts gesture recognizer registration from WKWebView
+ * Captures back/forward gesture recognizers for independent control
+ */
+- (void)addGestureRecognizer:(UIGestureRecognizer *)gestureRecognizer {
+    if (self.allowsBackNavigationGesturesSet &&
+        [gestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
+
+        UIScreenEdgePanGestureRecognizer *navigationGestures = (UIScreenEdgePanGestureRecognizer*)gestureRecognizer;
+
+        // Capture left-edge gesture (back navigation)
+        if (navigationGestures.edges == UIRectEdgeLeft) {
+            navigationGestures.enabled = self.backNavigationGestures ? self.backNavigationGestures.enabled : YES;
+            self.backNavigationGestures = navigationGestures;
+        }
+
+        // Capture right-edge gesture (forward navigation)
+        if (navigationGestures.edges == UIRectEdgeRight) {
+            navigationGestures.enabled = self.forwardNavigationGestures ? self.forwardNavigationGestures.enabled : NO;
+            self.forwardNavigationGestures = navigationGestures;
+        }
+    }
+    [super addGestureRecognizer:gestureRecognizer];
+}
+
+// Back navigation gesture property
+- (BOOL)allowsBackNavigationGestures {
+    return self.backNavigationGestures.enabled;
+}
+
+- (void)setAllowsBackNavigationGestures:(BOOL)allowsBackNavigationGestures {
+    if (self.allowsBackNavigationGestures != allowsBackNavigationGestures) {
+        self.backNavigationGestures.enabled = allowsBackNavigationGestures;
+    }
+}
+
+// Forward navigation gesture property
+- (BOOL)allowsForwardNavigationGestures {
+    return self.forwardNavigationGestures.enabled;
+}
+
+- (void)setAllowsForwardNavigationGestures:(BOOL)allowsForwardNavigationGestures {
+    if (self.allowsForwardNavigationGestures != allowsForwardNavigationGestures) {
+        self.forwardNavigationGestures.enabled = allowsForwardNavigationGestures;
+    }
 }
 
 @end

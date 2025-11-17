@@ -158,4 +158,22 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 
 @end
 
+/**
+ * AYWKWebView - Custom WKWebView subclass for independent gesture control
+ * Allows separate control of back/forward navigation gestures
+ */
+
+// WKWebView을 상속 WKWebView의 모든 기능을 물려받되, 추가 기능을 넣기 위함
+@interface AYWKWebView : WKWebView
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored"-Wobjc-property-synthesis"
+@property (nonatomic) BOOL allowsBackForwardNavigationGestures NS_UNAVAILABLE;
+#pragma clang diagnostic pop
+
+@property (nonatomic) BOOL allowsBackNavigationGestures;
+@property (nonatomic) BOOL allowsForwardNavigationGestures;
+
+@end
+
 NS_ASSUME_NONNULL_END
