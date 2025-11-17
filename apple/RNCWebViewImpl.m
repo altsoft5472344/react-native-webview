@@ -17,7 +17,7 @@
 
 #import "objc/runtime.h"
 
-// Forward declaration of AYWKWebView (implemented at end of file)
+/** AYWKWebView 전방 선언 (파일 끝부분에 구현됨) */
 @class AYWKWebView;
 
 static NSTimer *keyboardTimer;
@@ -521,7 +521,7 @@ RCTAutoInsetsProtocol>
     WKWebViewConfiguration *wkWebViewConfig = [self setUpWkWebViewConfig];
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
 
-    // Configure independent gesture control (back: enabled, forward: disabled)
+    /** 독립적인 제스처 제어 설정 (뒤로가기: 활성화, 앞으로가기: 비활성화) */
     _webView.allowsBackNavigationGestures = YES;
     _webView.allowsForwardNavigationGestures = NO;
 
@@ -547,7 +547,7 @@ RCTAutoInsetsProtocol>
 #endif // !TARGET_OS_OSX
     _webView.allowsLinkPreview = _allowsLinkPreview;
     [_webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionOld | NSKeyValueObservingOptionNew context:nil];
-    // Use independent gesture control instead of deprecated combined property
+    /** 기존 통합 속성 대신 독립적인 제스처 제어 사용 */
     _webView.allowsBackNavigationGestures = _allowsBackForwardNavigationGestures;
     _webView.allowsForwardNavigationGestures = NO;
 
@@ -592,10 +592,10 @@ RCTAutoInsetsProtocol>
 #endif // !TARGET_OS_OSX
 }
 
-// Update webview property when the component prop changes.
+/** 컴포넌트 prop 변경 시 웹뷰 속성 업데이트 */
 - (void)setAllowsBackForwardNavigationGestures:(BOOL)allowsBackForwardNavigationGestures {
   _allowsBackForwardNavigationGestures = allowsBackForwardNavigationGestures;
-  // Use independent gesture control: only back gesture follows the prop, forward is always disabled
+  /** 독립적인 제스처 제어: 뒤로가기만 prop 값을 따르고, 앞으로가기는 항상 비활성화 */
   _webView.allowsBackNavigationGestures = _allowsBackForwardNavigationGestures;
   _webView.allowsForwardNavigationGestures = NO;
 }
@@ -1972,10 +1972,10 @@ didFinishNavigation:(WKNavigation *)navigation
 #pragma mark - AYWKWebView Implementation
 
 /**
- * AYWKWebView - Custom WKWebView for independent back/forward gesture control
+ * AYWKWebView - 독립적인 뒤로/앞으로 제스처 제어를 위한 커스텀 WKWebView
  *
- * Intercepts WKWebView's gesture recognizer registration to separately control
- * left-edge (back) and right-edge (forward) swipe gestures.
+ * WKWebView의 제스처 인식기 등록을 가로채서
+ * 왼쪽 가장자리(뒤로가기)와 오른쪽 가장자리(앞으로가기) 스와이프 제스처를 개별적으로 제어
  */
 
 @interface AYWKWebView ()
@@ -2034,8 +2034,8 @@ didFinishNavigation:(WKNavigation *)navigation
 }
 
 /**
- * Triggers parent WKWebView to register its gesture recognizers
- * Sets flag to intercept gesture registration in addGestureRecognizer
+ * 부모 WKWebView가 제스처 인식기를 등록하도록 트리거
+ * addGestureRecognizer에서 제스처 등록을 가로채기 위한 플래그 설정
  */
 - (void)_allowsBackForwardNavigationGestures {
     self.allowsBackNavigationGesturesSet = YES;
@@ -2044,8 +2044,8 @@ didFinishNavigation:(WKNavigation *)navigation
 }
 
 /**
- * Intercepts gesture recognizer registration from WKWebView
- * Captures back/forward gesture recognizers for independent control
+ * WKWebView의 제스처 인식기 등록을 가로챔
+ * 뒤로/앞으로 제스처 인식기를 캡처하여 독립적으로 제어
  */
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gestureRecognizer {
     if (self.allowsBackNavigationGesturesSet &&
@@ -2053,13 +2053,13 @@ didFinishNavigation:(WKNavigation *)navigation
 
         UIScreenEdgePanGestureRecognizer *navigationGestures = (UIScreenEdgePanGestureRecognizer*)gestureRecognizer;
 
-        // Capture left-edge gesture (back navigation)
+        /** 왼쪽 가장자리 제스처 캡처 (뒤로가기) */
         if (navigationGestures.edges == UIRectEdgeLeft) {
             navigationGestures.enabled = self.backNavigationGestures ? self.backNavigationGestures.enabled : YES;
             self.backNavigationGestures = navigationGestures;
         }
 
-        // Capture right-edge gesture (forward navigation)
+        /** 오른쪽 가장자리 제스처 캡처 (앞으로가기) */
         if (navigationGestures.edges == UIRectEdgeRight) {
             navigationGestures.enabled = self.forwardNavigationGestures ? self.forwardNavigationGestures.enabled : NO;
             self.forwardNavigationGestures = navigationGestures;
@@ -2068,7 +2068,7 @@ didFinishNavigation:(WKNavigation *)navigation
     [super addGestureRecognizer:gestureRecognizer];
 }
 
-// Back navigation gesture property
+/** 뒤로가기 제스처 속성 */
 - (BOOL)allowsBackNavigationGestures {
     return self.backNavigationGestures.enabled;
 }
@@ -2079,7 +2079,7 @@ didFinishNavigation:(WKNavigation *)navigation
     }
 }
 
-// Forward navigation gesture property
+/** 앞으로가기 제스처 속성 */
 - (BOOL)allowsForwardNavigationGestures {
     return self.forwardNavigationGestures.enabled;
 }

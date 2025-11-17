@@ -159,11 +159,11 @@ shouldStartLoadForRequest:(NSMutableDictionary<NSString *, id> *)request
 @end
 
 /**
- * AYWKWebView - Custom WKWebView subclass for independent gesture control
- * Allows separate control of back/forward navigation gestures
+ * AYWKWebView - 독립적인 제스처 제어를 위한 커스텀 WKWebView 서브클래스
+ * 뒤로/앞으로 네비게이션 제스처를 개별적으로 제어할 수 있음
  */
 
-// WKWebView을 상속 WKWebView의 모든 기능을 물려받되, 추가 기능을 넣기 위함
+/** WKWebView을 상속받아 모든 기능을 물려받되, 추가 기능을 넣기 위함 */
 @interface AYWKWebView : WKWebView
 
 #pragma clang diagnostic push
