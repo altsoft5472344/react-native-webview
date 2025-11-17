@@ -17,6 +17,9 @@
 
 #import "objc/runtime.h"
 
+/** AYWKWebView 전방 선언 (파일 끝부분에 구현됨) */
+@class AYWKWebView;
+
 static NSTimer *keyboardTimer;
 static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
@@ -48,7 +51,7 @@ NSString *const CUSTOM_SELECTOR = @"_CUSTOM_SELECTOR_";
 @end
 #endif // TARGET_OS_IOS
 
-@interface RNCWKWebView : WKWebView
+@interface RNCWKWebView : AYWKWebView
 #if !TARGET_OS_OSX
 @property (nonatomic, copy) NSArray<NSDictionary *> * _Nullable menuItems;
 @property (nonatomic, copy) NSArray<NSString *> * _Nullable suppressMenuItems;
@@ -517,6 +520,11 @@ RCTAutoInsetsProtocol>
   if (self.window != nil && _webView == nil) {
     WKWebViewConfiguration *wkWebViewConfig = [self setUpWkWebViewConfig];
     _webView = [[RNCWKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
+
+    /** 독립적인 제스처 제어 설정 (뒤로가기: 활성화, 앞으로가기: 비활성화) */
+    _webView.allowsBackNavigationGestures = YES;
+    _webView.allowsForwardNavigationGestures = NO;
+
     [self setBackgroundColor: _savedBackgroundColor];
 #if !TARGET_OS_OSX
     _webView.menuItems = _menuItems;
@@ -539,7 +547,9 @@ RCTAutoInsetsProtocol>
 #endif // !TARGET_OS_OSX
     _webView.allowsLinkPreview = _allowsLinkPreview;
     [_webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionOld | NSKeyValueObservingOptionNew context:nil];
-    _webView.allowsBackForwardNavigationGestures = _allowsBackForwardNavigationGestures;
+    /** 기존 통합 속성 대신 독립적인 제스처 제어 사용 */
+    _webView.allowsBackNavigationGestures = _allowsBackForwardNavigationGestures;
+    _webView.allowsForwardNavigationGestures = NO;
 
     _webView.customUserAgent = _userAgent;
 
@@ -582,10 +592,12 @@ RCTAutoInsetsProtocol>
 #endif // !TARGET_OS_OSX
 }
 
-// Update webview property when the component prop changes.
+/** 컴포넌트 prop 변경 시 웹뷰 속성 업데이트 */
 - (void)setAllowsBackForwardNavigationGestures:(BOOL)allowsBackForwardNavigationGestures {
   _allowsBackForwardNavigationGestures = allowsBackForwardNavigationGestures;
-  _webView.allowsBackForwardNavigationGestures = _allowsBackForwardNavigationGestures;
+  /** 독립적인 제스처 제어: 뒤로가기만 prop 값을 따르고, 앞으로가기는 항상 비활성화 */
+  _webView.allowsBackNavigationGestures = _allowsBackForwardNavigationGestures;
+  _webView.allowsForwardNavigationGestures = NO;
 }
 
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130300 || \
@@ -1953,6 +1965,129 @@ didFinishNavigation:(WKNavigation *)navigation
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
   [self.scriptDelegate userContentController:userContentController didReceiveScriptMessage:message];
+}
+
+@end
+
+#pragma mark - AYWKWebView Implementation
+
+/**
+ * AYWKWebView - 독립적인 뒤로/앞으로 제스처 제어를 위한 커스텀 WKWebView
+ *
+ * WKWebView의 제스처 인식기 등록을 가로채서
+ * 왼쪽 가장자리(뒤로가기)와 오른쪽 가장자리(앞으로가기) 스와이프 제스처를 개별적으로 제어
+ */
+
+@interface AYWKWebView ()
+
+@property (nonatomic, assign) BOOL didInit;
+@property (nonatomic, strong) UIScreenEdgePanGestureRecognizer *backNavigationGestures;
+@property (nonatomic, strong) UIScreenEdgePanGestureRecognizer *forwardNavigationGestures;
+@property (nonatomic, assign) BOOL allowsBackNavigationGesturesSet;
+
+@end
+
+@implementation AYWKWebView
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    self = [super initWithCoder:coder];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
+    self = [super initWithFrame:frame configuration:configuration];
+    if (self) {
+        [self customIntitialization];
+    }
+    return self;
+}
+
+- (void)customIntitialization {
+    if (!self.didInit) {
+        self.didInit = YES;
+        [self _allowsBackForwardNavigationGestures];
+    }
+}
+
+- (void)dealloc {
+    self.backNavigationGestures = nil;
+    self.forwardNavigationGestures = nil;
+}
+
+/**
+ * 부모 WKWebView가 제스처 인식기를 등록하도록 트리거
+ * addGestureRecognizer에서 제스처 등록을 가로채기 위한 플래그 설정
+ */
+- (void)_allowsBackForwardNavigationGestures {
+    self.allowsBackNavigationGesturesSet = YES;
+    [super setAllowsBackForwardNavigationGestures:YES];
+    self.allowsBackNavigationGesturesSet = NO;
+}
+
+/**
+ * WKWebView의 제스처 인식기 등록을 가로챔
+ * 뒤로/앞으로 제스처 인식기를 캡처하여 독립적으로 제어
+ */
+- (void)addGestureRecognizer:(UIGestureRecognizer *)gestureRecognizer {
+    if (self.allowsBackNavigationGesturesSet &&
+        [gestureRecognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) {
+
+        UIScreenEdgePanGestureRecognizer *navigationGestures = (UIScreenEdgePanGestureRecognizer*)gestureRecognizer;
+
+        /** 왼쪽 가장자리 제스처 캡처 (뒤로가기) */
+        if (navigationGestures.edges == UIRectEdgeLeft) {
+            navigationGestures.enabled = self.backNavigationGestures ? self.backNavigationGestures.enabled : YES;
+            self.backNavigationGestures = navigationGestures;
+        }
+
+        /** 오른쪽 가장자리 제스처 캡처 (앞으로가기) */
+        if (navigationGestures.edges == UIRectEdgeRight) {
+            navigationGestures.enabled = self.forwardNavigationGestures ? self.forwardNavigationGestures.enabled : NO;
+            self.forwardNavigationGestures = navigationGestures;
+        }
+    }
+    [super addGestureRecognizer:gestureRecognizer];
+}
+
+/** 뒤로가기 제스처 속성 */
+- (BOOL)allowsBackNavigationGestures {
+    return self.backNavigationGestures.enabled;
+}
+
+- (void)setAllowsBackNavigationGestures:(BOOL)allowsBackNavigationGestures {
+    if (self.allowsBackNavigationGestures != allowsBackNavigationGestures) {
+        self.backNavigationGestures.enabled = allowsBackNavigationGestures;
+    }
+}
+
+/** 앞으로가기 제스처 속성 */
+- (BOOL)allowsForwardNavigationGestures {
+    return self.forwardNavigationGestures.enabled;
+}
+
+- (void)setAllowsForwardNavigationGestures:(BOOL)allowsForwardNavigationGestures {
+    if (self.allowsForwardNavigationGestures != allowsForwardNavigationGestures) {
+        self.forwardNavigationGestures.enabled = allowsForwardNavigationGestures;
+    }
 }
 
 @end
