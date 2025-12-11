@@ -87,6 +87,18 @@ public class RNCWebView extends WebView implements LifecycleEventListener {
      */
     public RNCWebView(ThemedReactContext reactContext) {
         super(reactContext);
+
+
+
+    // 화면에 완전히 다 안 보여도 미리 그려두도록 힌트
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        try {
+            setOffscreenPreRaster(true);
+        } catch (Throwable t) {
+            // 혹시 제조사 커스텀 WebView에서 예외나도 앱 죽지 않게 방어
+        }
+    }
+
         mMessagingJSModule = ((ThemedReactContext) this.getContext()).getReactApplicationContext().getJSModule(RNCWebViewMessagingModule.class);
         progressChangedFilter = new ProgressChangedFilter();
     }
