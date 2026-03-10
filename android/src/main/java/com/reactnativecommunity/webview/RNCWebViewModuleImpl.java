@@ -3,9 +3,11 @@ package com.reactnativecommunity.webview;
 import android.Manifest;
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -46,10 +48,12 @@ import static android.app.Activity.RESULT_OK;
 
 public class RNCWebViewModuleImpl implements ActivityEventListener {
     public static final String NAME = "RNCWebViewModule";
+    private static final String GOOGLE_PHOTOS_PACKAGE = "com.google.android.apps.photos";
 
     public static final int PICKER = 1;
     public static final int PICKER_LEGACY = 3;
     public static final int FILE_DOWNLOAD_PERMISSION_REQUEST = 1;
+    public static final int FILE_UPLOAD_PERMISSION_REQUEST = 2;
 
     final private ReactApplicationContext mContext;
 
@@ -59,6 +63,9 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
     private ValueCallback<Uri[]> mFilePathCallback;
     private File mOutputImage;
     private File mOutputVideo;
+    private String[] mPendingFileChooserAcceptTypes;
+    private boolean mPendingFileChooserAllowMultiple;
+    private boolean mPendingFileChooserCaptureEnabled;
 
     public RNCWebViewModuleImpl(ReactApplicationContext context) {
         mContext = context;
@@ -237,23 +244,24 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
     public void startPhotoPickerIntent(String acceptType, ValueCallback<Uri> callback) {
         mFilePathCallbackLegacy = callback;
         Activity activity = mContext.getCurrentActivity();
+        if (activity == null) {
+            Log.w("RNCWebViewModule", "there is no Activity to handle this Intent");
+            return;
+        }
         Intent fileChooserIntent = getFileChooserIntent(acceptType);
         Intent chooserIntent = Intent.createChooser(fileChooserIntent, "");
 
         ArrayList<Parcelable> extraIntents = new ArrayList<>();
-        if (acceptsImages(acceptType)) {
-            Intent photoIntent = getPhotoIntent();
-            if (photoIntent != null) {
-                extraIntents.add(photoIntent);
-            }
+        Intent photoIntent = getPhotoIntent();
+        if (photoIntent != null) {
+            extraIntents.add(photoIntent);
         }
-        if (acceptsVideo(acceptType)) {
-            Intent videoIntent = getVideoIntent();
-            if (videoIntent != null) {
-                extraIntents.add(videoIntent);
-            }
+        Intent videoIntent = getVideoIntent();
+        if (videoIntent != null) {
+            extraIntents.add(videoIntent);
         }
-        chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, extraIntents.toArray(new Parcelable[]{}));
+        chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, extraIntents.toArray(new Parcelable[0]));
+        excludeGooglePhotosFromChooser(chooserIntent, fileChooserIntent, activity);
 
         if (chooserIntent.resolveActivity(activity.getPackageManager()) != null) {
             activity.startActivityForResult(chooserIntent, PICKER_LEGACY);
@@ -265,45 +273,19 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
     public boolean startPhotoPickerIntent(final String[] acceptTypes, final boolean allowMultiple, final ValueCallback<Uri[]> callback, final boolean isCaptureEnabled) {
         mFilePathCallback = callback;
         Activity activity = mContext.getCurrentActivity();
-
-        ArrayList<Parcelable> extraIntents = new ArrayList<>();
-        Intent photoIntent = null;
-        if (!needsCameraPermission()) {
-            if (acceptsImages(acceptTypes)) {
-                photoIntent = getPhotoIntent();
-                if (photoIntent != null) {
-                    extraIntents.add(photoIntent);
-                }
-            }
-            if (acceptsVideo(acceptTypes)) {
-                Intent videoIntent = getVideoIntent();
-                if (videoIntent != null) {
-                    extraIntents.add(videoIntent);
-                }
-            }
+        String[] normalizedAcceptTypes = acceptTypes != null ? acceptTypes : new String[0];
+        if (activity == null) {
+            Log.w("RNCWebViewModule", "there is no Activity to handle this Intent");
+            return false;
         }
 
-        Intent chooserIntent = new Intent(Intent.ACTION_CHOOSER);
-        if (isCaptureEnabled) {
-            chooserIntent = photoIntent;
-        } else {
-            Intent fileSelectionIntent = getFileChooserIntent(acceptTypes, allowMultiple);
-
-            chooserIntent.putExtra(Intent.EXTRA_INTENT, fileSelectionIntent);
-            chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, extraIntents.toArray(new Parcelable[]{}));
+        if (needsCameraPermission()) {
+            setPendingFileChooserRequest(normalizedAcceptTypes, allowMultiple, isCaptureEnabled);
+            requestFileUploadPermissions();
+            return true;
         }
 
-        if (chooserIntent != null) {
-            if (chooserIntent.resolveActivity(activity.getPackageManager()) != null) {
-                activity.startActivityForResult(chooserIntent, PICKER);
-            } else {
-                Log.w("RNCWebViewModule", "there is no Activity to handle this Intent");
-            }
-        } else {
-            Log.w("RNCWebViewModule", "there is no Camera permission");
-        }
-
-        return true;
+        return startPhotoPickerIntent(activity, normalizedAcceptTypes, allowMultiple, isCaptureEnabled, true);
     }
 
     public void setDownloadRequest(DownloadManager.Request request) {
@@ -365,6 +347,8 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
             Uri outputImageUri = getOutputUri(mOutputImage);
             intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
             intent.putExtra(MediaStore.EXTRA_OUTPUT, outputImageUri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         } catch (IOException | IllegalArgumentException e) {
             Log.e("CREATE FILE", "Error occurred while creating the File", e);
             e.printStackTrace();
@@ -381,6 +365,8 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
             Uri outputVideoUri = getOutputUri(mOutputVideo);
             intent = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
             intent.putExtra(MediaStore.EXTRA_OUTPUT, outputVideoUri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         } catch (IOException | IllegalArgumentException e) {
             Log.e("CREATE FILE", "Error occurred while creating the File", e);
             e.printStackTrace();
@@ -390,25 +376,44 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
     }
 
     private Intent getFileChooserIntent(String acceptTypes) {
-   
-        // 갤러리 선택을 위한 ACTION_PICK 인텐트
-        Intent pickIntent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
-        pickIntent.setType("image/* video/*");
-
-        
-  
-        return pickIntent;
+        return createGalleryIntent(acceptsImages(acceptTypes), acceptsVideo(acceptTypes), false);
     }
 
     private Intent getFileChooserIntent(String[] acceptTypes, boolean allowMultiple) {
-        Intent pickIntent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
-        pickIntent.setType("image/* video/*");
-        
+        return createGalleryIntent(acceptsImages(acceptTypes), acceptsVideo(acceptTypes), allowMultiple);
+    }
+
+    private Intent createGalleryIntent(boolean includeImages, boolean includeVideo, boolean allowMultiple) {
+        boolean useImageGallery = includeImages || !includeVideo;
+        Uri galleryUri = useImageGallery
+                ? MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                : MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+        String mimeType = useImageGallery ? "image/*" : "video/*";
+
+        Intent pickIntent = new Intent(Intent.ACTION_PICK, galleryUri);
+        pickIntent.setType(mimeType);
+
+        if (includeImages && includeVideo) {
+            pickIntent.putExtra(Intent.EXTRA_MIME_TYPES, getChooserMimeTypes());
+        }
+
         if (allowMultiple && Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
             pickIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         }
-  
+
+        Activity activity = mContext.getCurrentActivity();
+        if (activity != null) {
+            ComponentName galleryComponent = getPreferredGalleryComponent(pickIntent, activity.getPackageManager());
+            if (galleryComponent != null) {
+                pickIntent.setComponent(galleryComponent);
+            }
+        }
+
         return pickIntent;
+    }
+
+    private String[] getChooserMimeTypes() {
+        return new String[]{"image/*", "video/*"};
     }
 
     private Boolean acceptsImages(String types) {
@@ -539,6 +544,189 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
         // will be an array with one empty string element, afaik
 
         return types.length == 0 || (types.length == 1 && types[0] != null && types[0].length() == 0);
+    }
+
+    private PermissionListener getWebviewFileUploaderPermissionListener() {
+        return new PermissionListener() {
+            @Override
+            public boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+                switch (requestCode) {
+                    case FILE_UPLOAD_PERMISSION_REQUEST: {
+                        boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
+                        if (granted) {
+                            resumePendingPhotoPickerIntent(true);
+                        } else if (mPendingFileChooserCaptureEnabled) {
+                            if (mFilePathCallback != null) {
+                                mFilePathCallback.onReceiveValue(null);
+                            }
+                            mFilePathCallback = null;
+                            clearPendingFileChooserRequest();
+                        } else {
+                            resumePendingPhotoPickerIntent(false);
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            }
+        };
+    }
+
+    private void requestFileUploadPermissions() {
+        PermissionAwareActivity activity = getPermissionAwareActivity();
+        activity.requestPermissions(
+                new String[]{Manifest.permission.CAMERA},
+                FILE_UPLOAD_PERMISSION_REQUEST,
+                getWebviewFileUploaderPermissionListener()
+        );
+    }
+
+    private void setPendingFileChooserRequest(String[] acceptTypes, boolean allowMultiple, boolean isCaptureEnabled) {
+        mPendingFileChooserAcceptTypes = acceptTypes != null ? acceptTypes.clone() : new String[0];
+        mPendingFileChooserAllowMultiple = allowMultiple;
+        mPendingFileChooserCaptureEnabled = isCaptureEnabled;
+    }
+
+    private void clearPendingFileChooserRequest() {
+        mPendingFileChooserAcceptTypes = null;
+        mPendingFileChooserAllowMultiple = false;
+        mPendingFileChooserCaptureEnabled = false;
+    }
+
+    private void resumePendingPhotoPickerIntent(boolean includeCameraIntents) {
+        Activity activity = mContext.getCurrentActivity();
+        if (activity == null) {
+            Log.w("RNCWebViewModule", "there is no Activity to handle this Intent");
+            if (mFilePathCallback != null) {
+                mFilePathCallback.onReceiveValue(null);
+            }
+            mFilePathCallback = null;
+            clearPendingFileChooserRequest();
+            return;
+        }
+
+        String[] acceptTypes = mPendingFileChooserAcceptTypes != null ? mPendingFileChooserAcceptTypes : new String[0];
+        boolean allowMultiple = mPendingFileChooserAllowMultiple;
+        boolean isCaptureEnabled = mPendingFileChooserCaptureEnabled;
+
+        clearPendingFileChooserRequest();
+        startPhotoPickerIntent(activity, acceptTypes, allowMultiple, isCaptureEnabled, includeCameraIntents);
+    }
+
+    private boolean startPhotoPickerIntent(Activity activity, String[] acceptTypes, boolean allowMultiple, boolean isCaptureEnabled, boolean includeCameraIntents) {
+        Intent chooserIntent = getPhotoPickerIntent(activity, acceptTypes, allowMultiple, isCaptureEnabled, includeCameraIntents);
+
+        if (chooserIntent == null) {
+            Log.w("RNCWebViewModule", "there is no Camera permission");
+            return false;
+        }
+
+        if (chooserIntent.resolveActivity(activity.getPackageManager()) != null) {
+            activity.startActivityForResult(chooserIntent, PICKER);
+        } else {
+            Log.w("RNCWebViewModule", "there is no Activity to handle this Intent");
+        }
+
+        return true;
+    }
+
+    private Intent getPhotoPickerIntent(Activity activity, String[] acceptTypes, boolean allowMultiple, boolean isCaptureEnabled, boolean includeCameraIntents) {
+        if (isCaptureEnabled) {
+            return includeCameraIntents ? getCaptureIntent(acceptTypes) : null;
+        }
+
+        Intent chooserIntent = new Intent(Intent.ACTION_CHOOSER);
+        Intent fileSelectionIntent = getFileChooserIntent(acceptTypes, allowMultiple);
+        chooserIntent.putExtra(Intent.EXTRA_INTENT, fileSelectionIntent);
+        excludeGooglePhotosFromChooser(chooserIntent, fileSelectionIntent, activity);
+
+        if (includeCameraIntents) {
+            ArrayList<Parcelable> extraIntents = new ArrayList<>();
+            Intent photoIntent = getPhotoIntent();
+            if (photoIntent != null) {
+                extraIntents.add(photoIntent);
+            }
+            Intent videoIntent = getVideoIntent();
+            if (videoIntent != null) {
+                extraIntents.add(videoIntent);
+            }
+            chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, extraIntents.toArray(new Parcelable[0]));
+        }
+
+        return chooserIntent;
+    }
+
+    private void excludeGooglePhotosFromChooser(Intent chooserIntent, Intent targetIntent, Activity activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return;
+        }
+
+        ComponentName[] excludedComponents = getExcludedChooserComponents(targetIntent, activity.getPackageManager());
+        if (excludedComponents.length > 0) {
+            chooserIntent.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, excludedComponents);
+        }
+    }
+
+    private ComponentName[] getExcludedChooserComponents(Intent targetIntent, PackageManager packageManager) {
+        ArrayList<ComponentName> excludedComponents = new ArrayList<>();
+        for (ResolveInfo resolveInfo : packageManager.queryIntentActivities(targetIntent, PackageManager.MATCH_DEFAULT_ONLY)) {
+            if (resolveInfo.activityInfo != null
+                    && GOOGLE_PHOTOS_PACKAGE.equals(resolveInfo.activityInfo.packageName)) {
+                excludedComponents.add(new ComponentName(resolveInfo.activityInfo.packageName, resolveInfo.activityInfo.name));
+            }
+        }
+        return excludedComponents.toArray(new ComponentName[0]);
+    }
+
+    private ComponentName getPreferredGalleryComponent(Intent targetIntent, PackageManager packageManager) {
+        ResolveInfo fallbackResolveInfo = null;
+
+        for (ResolveInfo resolveInfo : packageManager.queryIntentActivities(targetIntent, PackageManager.MATCH_DEFAULT_ONLY)) {
+            if (resolveInfo.activityInfo == null) {
+                continue;
+            }
+
+            String packageName = resolveInfo.activityInfo.packageName;
+            if (GOOGLE_PHOTOS_PACKAGE.equals(packageName)) {
+                continue;
+            }
+
+            if (fallbackResolveInfo == null) {
+                fallbackResolveInfo = resolveInfo;
+            }
+
+            String normalizedPackageName = packageName.toLowerCase();
+            if (normalizedPackageName.contains("gallery")
+                    || normalizedPackageName.contains("album")
+                    || normalizedPackageName.contains("media")) {
+                return new ComponentName(resolveInfo.activityInfo.packageName, resolveInfo.activityInfo.name);
+            }
+        }
+
+        if (fallbackResolveInfo == null || fallbackResolveInfo.activityInfo == null) {
+            return null;
+        }
+
+        return new ComponentName(fallbackResolveInfo.activityInfo.packageName, fallbackResolveInfo.activityInfo.name);
+    }
+
+    private Intent getCaptureIntent(String[] acceptTypes) {
+        boolean supportsImages = acceptsImages(acceptTypes);
+        boolean supportsVideo = acceptsVideo(acceptTypes);
+
+        if (supportsImages) {
+            Intent photoIntent = getPhotoIntent();
+            if (photoIntent != null) {
+                return photoIntent;
+            }
+        }
+
+        if (supportsVideo) {
+            return getVideoIntent();
+        }
+
+        return null;
     }
 
     private PermissionAwareActivity getPermissionAwareActivity() {
