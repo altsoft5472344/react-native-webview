@@ -384,16 +384,19 @@ public class RNCWebViewModuleImpl implements ActivityEventListener {
     }
 
     private Intent createGalleryIntent(boolean includeImages, boolean includeVideo, boolean allowMultiple) {
+        boolean includeAllMedia = includeImages && includeVideo;
         boolean useImageGallery = includeImages || !includeVideo;
-        Uri galleryUri = useImageGallery
+        Uri galleryUri = includeAllMedia
+                ? MediaStore.Files.getContentUri("external")
+                : (useImageGallery
                 ? MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                : MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
-        String mimeType = useImageGallery ? "image/*" : "video/*";
+                : MediaStore.Video.Media.EXTERNAL_CONTENT_URI);
+        String mimeType = includeAllMedia ? MimeType.DEFAULT.value : (useImageGallery ? "image/*" : "video/*");
 
-        Intent pickIntent = new Intent(Intent.ACTION_PICK, galleryUri);
-        pickIntent.setType(mimeType);
+        Intent pickIntent = new Intent(Intent.ACTION_PICK);
+        pickIntent.setDataAndType(galleryUri, mimeType);
 
-        if (includeImages && includeVideo) {
+        if (includeAllMedia) {
             pickIntent.putExtra(Intent.EXTRA_MIME_TYPES, getChooserMimeTypes());
         }
 
